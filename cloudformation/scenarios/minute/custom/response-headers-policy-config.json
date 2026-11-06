@@ -1,0 +1,80 @@
+{
+    "ETag": "E1IM4EOPHS76S7",
+    "ResponseHeadersPolicyConfig": {
+        "Comment": "",
+        "Name": "SecureResponseHeadersWithCSP",
+        "CorsConfig": {
+            "AccessControlAllowOrigins": {
+                "Quantity": 1,
+                "Items": [
+                    "{APP-URL}"
+                ]
+            },
+            "AccessControlAllowHeaders": {
+                "Quantity": 1,
+                "Items": [
+                    "*"
+                ]
+            },
+            "AccessControlAllowMethods": {
+                "Quantity": 1,
+                "Items": [
+                    "ALL"
+                ]
+            },
+            "AccessControlAllowCredentials": false,
+            "AccessControlExposeHeaders": {
+                "Quantity": 0,
+                "Items": []
+            },
+            "AccessControlMaxAgeSec": 600,
+            "OriginOverride": true
+        },
+        "SecurityHeadersConfig": {
+            "XSSProtection": {
+                "Override": true,
+                "Protection": true,
+                "ModeBlock": true
+            },
+            "FrameOptions": {
+                "Override": true,
+                "FrameOption": "SAMEORIGIN"
+            },
+            "ReferrerPolicy": {
+                "Override": true,
+                "ReferrerPolicy": "strict-origin-when-cross-origin"
+            },
+            "ContentSecurityPolicy": {
+                "Override": true,
+                "ContentSecurityPolicy": "default-src 'self'; script-src 'self'; style-src 'self' ; img-src 'self'; font-src 'self' ; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; manifest-src 'self'; upgrade-insecure-requests;"
+            },
+            "ContentTypeOptions": {
+                "Override": true
+            },
+            "StrictTransportSecurity": {
+                "Override": true,
+                "IncludeSubdomains": true,
+                "Preload": false,
+                "AccessControlMaxAgeSec": 31536000
+            }
+        },
+        "CustomHeadersConfig": {
+            "Quantity": 1,
+            "Items": [
+                {
+                    "Header": "Permissions-Policy",
+                    "Value": "accelerometer=(), autoplay=(), camera=(), cross-origin-isolated=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=()",
+                    "Override": true
+                }
+            ]
+        },
+        "RemoveHeadersConfig": {
+            "Quantity": 1,
+            "Items": [
+                {
+                    "Header": "Server"
+                }
+            ]
+        }
+    }
+}

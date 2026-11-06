@@ -199,6 +199,9 @@ export class ComputeConstruct extends Construct {
       AWS_DEFAULT_REGION: cdk.Aws.REGION,
       AWS_REGION: cdk.Aws.REGION,
       AWS_ACCOUNT_ID: cdk.Aws.ACCOUNT_ID,
+      // Regional S3 endpoint — presigned URLs must not use the global
+      // s3.amazonaws.com hostname or browsers report CORS failures on redirect.
+      AWS_ENDPOINT_URL_S3: `https://s3.${cdk.Aws.REGION}.amazonaws.com`,
       // Required by Settings but not used in local/bedrock mode
       USE_LOCALSTACK: 'false',
     };

@@ -24,6 +24,7 @@
   "exclude": [
     "node_modules",
     "cdk.out",
-    "dist"
+    "dist",
+    "edge-auth"
   ]
 }

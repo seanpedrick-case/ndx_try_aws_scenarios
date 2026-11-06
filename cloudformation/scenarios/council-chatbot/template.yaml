@@ -200,8 +200,8 @@ Resources:
                 Resource: '*'
               - Effect: Allow
                 Action: bedrock:InvokeModel
-                Resource:
-                  - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0'
+                Resource: '*'
+                  # - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0'
         - PolicyName: S3DataSourceAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -1331,7 +1331,7 @@ Resources:
           GUARDRAIL_ID = os.environ.get('GUARDRAIL_ID', '')
           GUARDRAIL_VERSION = os.environ.get('GUARDRAIL_VERSION', '')
           MODEL_ID = os.environ.get('BEDROCK_MODEL_ID', 'amazon.nova-pro-v1:0')
-          REGION = os.environ.get('AWS_REGION', 'us-east-1')
+          REGION = os.environ.get('AWS_REGION', 'eu-west-2')
           MODEL_ARN = f'arn:aws:bedrock:{REGION}::foundation-model/{MODEL_ID}'
 
           SYSTEM_PROMPT = """You are a helpful UK local council service assistant for Sample Council.

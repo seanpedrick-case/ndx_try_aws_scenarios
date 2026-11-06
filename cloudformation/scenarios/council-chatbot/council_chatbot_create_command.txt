@@ -1,0 +1,9 @@
+In Powershell:
+
+aws cloudformation deploy `
+  --stack-name ndx-try-council-chatbot `
+  --template-file .\\cloudformation\\scenarios\\council-chatbot\\template.yaml `
+  --s3-bucket lambeth-ndx-try-council-chatbot `
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND `
+  --parameter-overrides Environment=sandbox `
+  --region eu-west-2
