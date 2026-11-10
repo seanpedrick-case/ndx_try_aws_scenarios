@@ -30,16 +30,15 @@ COPY patches/client.py common/llm/client.py
 # Add Bedrock adapter
 COPY patches/bedrock.py common/llm/adapters/bedrock.py
 
+# Regional S3 endpoint + sigv4 for browser-safe presigned URLs
+COPY patches/s3.py common/services/storage_services/s3.py
+
 # Patch settings to make Azure/Google fields optional with defaults
 RUN sed -i 's/AZURE_SPEECH_KEY: str = Field(description="Azure STT speech key for API")/AZURE_SPEECH_KEY: str = Field(description="Azure STT speech key for API", default="not-configured")/' common/settings.py && \
     sed -i 's/AZURE_SPEECH_REGION: str = Field(description="Region for Azure STT")/AZURE_SPEECH_REGION: str = Field(description="Region for Azure STT", default="not-configured")/' common/settings.py && \
     sed -i 's/AUTH_API_URL: str = Field(description="The hostname of the Auth API")/AUTH_API_URL: str = Field(description="The hostname of the Auth API", default="http:\/\/localhost")/' common/settings.py && \
     sed -i 's/APP_URL: str = Field(description="used for CORS origin validation")/APP_URL: str = Field(description="used for CORS origin validation", default="*")/' common/settings.py && \
     sed -i 's/REPO: str = Field(description="The name of the GitHub repository")/REPO: str = Field(description="The name of the GitHub repository", default="minute")/' common/settings.py
-
-# Force S3 signature v4 for presigned URLs (botocore defaults to v2 in us-east-1)
-RUN sed -i '1s/^/from botocore.config import Config\n/' common/services/storage_services/s3.py && \
-    sed -i 's/async_session.client("s3", region_name=settings.AWS_REGION)/async_session.client("s3", region_name=settings.AWS_REGION, config=Config(signature_version="s3v4"))/' common/services/storage_services/s3.py
 
 EXPOSE 8080
 

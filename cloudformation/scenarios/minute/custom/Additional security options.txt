@@ -1,0 +1,7 @@
+Change application load balancer security group to allow HTTP only from CloudFront prefixes, preset groupt: pl-93a247fa
+CloudFront - Enable WAF protection pack. Use CreatedByCloudFront-f8e70673.json for associated WAF
+WAF - Change AWS-AWSManagedRulesCommonRuleSet - SizeRestrictions_BODY to allow
+CloudFront - limit access to United Kingdom only
+CloudFront - Enable rate limiting 300 requests a minute
+CloudFront - Enable SQL protections
+Enable custom headers response policy on CloudFront following what is possible in template: response-headers-policy-config.json

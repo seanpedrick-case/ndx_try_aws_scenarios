@@ -1,0 +1,16 @@
+In Powershell:
+
+aws cloudformation deploy `
+  --stack-name ndx-try-council-chatbot `
+  --template-file .\\cloudformation\\scenarios\\council-chatbot\\template.yaml `
+  --s3-bucket lambeth-ndx-try-council-chatbot `
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND `
+  --parameter-overrides Environment=sandbox EnableKbMetadataFilter=1 `
+  --region eu-west-2
+
+# EnableKbMetadataFilter=1 runs an extra Bedrock call to infer a KB metadata filter before RAG (adds latency/cost).
+
+# You can validate before
+
+aws cloudformation validate-template --template-body file://cloudformation/scenarios/council-chatbot/template.yaml --region eu-west-2
+

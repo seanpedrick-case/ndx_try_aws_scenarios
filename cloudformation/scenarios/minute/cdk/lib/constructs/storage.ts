@@ -5,6 +5,23 @@ import { Construct } from 'constructs';
 
 export interface StorageConstructProps {}
 
+const BROWSER_CORS_METHODS = [
+  s3.HttpMethods.GET,
+  s3.HttpMethods.PUT,
+  s3.HttpMethods.POST,
+  s3.HttpMethods.DELETE,
+  s3.HttpMethods.HEAD,
+];
+
+const BROWSER_CORS_HEADERS = ['*'];
+
+const BROWSER_CORS_EXPOSED_HEADERS = [
+  'ETag',
+  'Content-Length',
+  'Content-Range',
+  'Accept-Ranges',
+];
+
 export class StorageConstruct extends Construct {
   public readonly dataBucket: s3.Bucket;
 
@@ -18,14 +35,11 @@ export class StorageConstruct extends Construct {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       cors: [
         {
-          allowedMethods: [
-            s3.HttpMethods.GET,
-            s3.HttpMethods.PUT,
-            s3.HttpMethods.POST,
-            s3.HttpMethods.DELETE,
-          ],
-          allowedOrigins: ['*'], // Will be restricted once we have a domain
-          allowedHeaders: ['*'],
+          allowedMethods: BROWSER_CORS_METHODS,
+          allowedOrigins: ['*'],
+          allowedHeaders: BROWSER_CORS_HEADERS,
+          exposedHeaders: BROWSER_CORS_EXPOSED_HEADERS,
+          maxAge: 3600,
         },
       ],
     });
@@ -39,5 +53,16 @@ export class StorageConstruct extends Construct {
         resources: [`${this.dataBucket.bucketArn}/*`],
       }),
     );
+  }
+
+  /** Pin the browser-facing origin for direct-to-S3 uploads/downloads. */
+  public addBrowserOrigin(origin: string): void {
+    this.dataBucket.addCorsRule({
+      allowedMethods: BROWSER_CORS_METHODS,
+      allowedOrigins: [origin],
+      allowedHeaders: BROWSER_CORS_HEADERS,
+      exposedHeaders: BROWSER_CORS_EXPOSED_HEADERS,
+      maxAge: 3600,
+    });
   }
 }

@@ -41,6 +41,39 @@ Notes:
 - `--managed-execution Active=true` is recommended for concurrent lease handling
 - Blueprint name must match pattern `^[a-zA-Z][a-zA-Z0-9-]{0,49}$`
 
+If you are not deploying into an Innovation Sandbox (ISB) or StackSet workflow, you can use the following command. `deploy` accepts a local template file and can be run again to update the stack:
+```bash
+aws cloudformation deploy `
+  --stack-name ndx-try-council-chatbot `
+  --template-url https://YOUR_BUCKET.s3.YOUR_BUCKET_REGION.amazonaws.com/scenarios/council-chatbot/template.yaml `
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND `
+  --parameter-overrides Environment=sandbox `
+  --region YOUR_DEPLOYMENT_REGION
+```
+
+You can also use the template file locally (Powershell, replace ` with ^ if using cmd):
+```bash
+aws cloudformation deploy `
+  --stack-name ndx-try-council-chatbot `
+  --template-file .\\cloudformation\\scenarios\\council-chatbot\\template.yaml `
+  --s3-bucket lambet-ndx-try-council-chatbot `
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND `
+  --parameter-overrides Environment=sandbox `
+  --region eu-west-2
+```
+
+Then monitor it with the following:
+
+```bash
+aws cloudformation wait stack-create-complete `
+  --stack-name ndx-try-council-chatbot `
+  --region us-east-1
+
+aws cloudformation describe-stacks `
+  --stack-name ndx-try-council-chatbot `
+  --query "Stacks[0].Outputs"
+```
+
 ## Step 3 — Register in ISB
 
 1. Navigate to ISB admin console > **Blueprints** > **Register New Blueprint**

@@ -16,6 +16,14 @@
     ]
   },
   "context": {
+    "minute:enableCdn": true,
+    "minute:authMode": "magic-link",
+    "minute:restrictAlbToCloudFront": true,
+    "minute:enableWaf": true,
+    "minute:enableSecurityHeaders": true,
+    "minute:geoAllowlist": "GB",
+    "minute:wafRateLimit": 300,
+    "minute:wafRateWindowSec": 60,
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/core:target-partitions": ["aws"],
