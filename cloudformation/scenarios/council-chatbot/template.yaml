@@ -13,6 +13,7 @@ Metadata:
         Parameters:
           - Environment
           - KnowledgeBaseSource
+          - EnableKbMetadataFilter
 
 Parameters:
   Environment:
@@ -28,6 +29,16 @@ Parameters:
     Type: String
     Default: council-sample-data
     Description: Knowledge base source for chatbot
+
+  EnableKbMetadataFilter:
+    Type: String
+    Default: '0'
+    AllowedValues:
+      - '0'
+      - '1'
+    Description: >-
+      When 1, Lambda runs a first Bedrock call to infer a knowledge-base metadata
+      filter from the user question, then applies it to retrieval (extra latency/cost).
 
 Resources:
   # S3 Bucket for Knowledge Base
@@ -1318,21 +1329,212 @@ Resources:
           KNOWLEDGE_BASE_ID: !Ref CouncilKnowledgeBase
           ENVIRONMENT: !Ref Environment
           BEDROCK_MODEL_ID: amazon.nova-pro-v1:0
+          ENABLE_KB_METADATA_FILTER: !Ref EnableKbMetadataFilter
           GUARDRAIL_ID: !GetAtt CouncilGuardrail.GuardrailId
           GUARDRAIL_VERSION: !GetAtt CouncilGuardrailVersion.Version
       Code:
         ZipFile: |
-          import json, os, boto3
+          import json, os, re, boto3
           from datetime import datetime
 
           bedrock_agent = boto3.client('bedrock-agent-runtime')
+          bedrock_runtime = boto3.client('bedrock-runtime')
 
           KB_ID = os.environ.get('KNOWLEDGE_BASE_ID', '')
           GUARDRAIL_ID = os.environ.get('GUARDRAIL_ID', '')
           GUARDRAIL_VERSION = os.environ.get('GUARDRAIL_VERSION', '')
           MODEL_ID = os.environ.get('BEDROCK_MODEL_ID', 'amazon.nova-pro-v1:0')
+          FILTER_MODEL_ID = os.environ.get('KB_METADATA_FILTER_MODEL_ID', MODEL_ID)
+          ENABLE_KB_METADATA_FILTER = os.environ.get('ENABLE_KB_METADATA_FILTER', '0') == '1'
           REGION = os.environ.get('AWS_REGION', 'eu-west-2')
           MODEL_ARN = f'arn:aws:bedrock:{REGION}::foundation-model/{MODEL_ID}'
+
+          KB_METADATA_FILTER_KEYS = frozenset({
+              'CaseNumber', 'CaseType', 'Team', 'Directorate', 'Division', 'Service',
+              'Outcome', 'OutcomeDate', 'DateReceived', 'DateAccepted', 'DateClosed',
+              'PublicDocumentUrl', 'PublicDocumentId'
+          })
+
+          KB_DATE_METADATA_KEYS = frozenset({
+              'OutcomeDate', 'DateReceived', 'DateAccepted', 'DateClosed'
+          })
+
+          ISO8601_OFFSET_DATETIME_RE = re.compile(
+              r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$'
+          )
+
+          def _is_valid_range_filter_value(metadata_key, val):
+              if isinstance(val, (int, float)) and not isinstance(val, bool):
+                  return True
+              if metadata_key in KB_DATE_METADATA_KEYS:
+                  if isinstance(val, str) and val:
+                      return bool(ISO8601_OFFSET_DATETIME_RE.match(val))
+                  return False
+              return False
+
+          FILTER_PROMPT = (
+              'You help pre-filter a council case / FOI knowledge base. Output ONLY valid JSON (no markdown fences) with exactly this shape: {"filter": <object|null>}\n'
+              '\n'
+              'CRITICAL — structure for each operator. Every leaf condition MUST use "key" and "value" keys. Never put metadata field names as inner object keys.\n'
+              '  Wrong: {"equals": {"CaseType": "Information request"}}\n'
+              '  Right: {"equals": {"key": "CaseType", "value": "Information request"}}\n'
+              '  Wrong: {"in": {"Service": ["X", "Y"]}}\n'
+              '  Right: {"in": {"key": "Service", "value": ["X", "Y"]}}\n'
+              '  Wrong: {"greaterThan": {"DateReceived": "01/01/2026"}}\n'
+              '  Right: {"greaterThan": {"key": "DateReceived", "value": "2026-01-01T00:00:00Z"}} — value MUST be full ISO-8601 with Z or offset (not DD/MM/YYYY).\n'
+              '\n'
+              'Date columns OutcomeDate, DateReceived, DateAccepted, DateClosed are stored as DD/MM/YYYY strings in the knowledge base. Bedrock range operators (greaterThan, lessThan, etc.) only work on numbers or ISO-8601 datetimes. Do NOT use range ops on those date keys unless the value is ISO-8601 like 2026-06-01T00:00:00Z. For "after June 2026" style questions, either output {"filter": null} and rely on semantic search, or use equals/in with exact DD/MM/YYYY strings only when you have them.\n'
+              '\n'
+              'The filter object is an Amazon Bedrock RetrievalFilter — exactly one top-level key: equals, notEquals, in, notIn, andAll, orAll, greaterThan, greaterThanOrEquals, lessThan, or lessThanOrEquals. Do NOT use startsWith or stringContains.\n'
+              '\n'
+              'Allowed metadata keys for "key" (exact spelling): CaseNumber, CaseType, Team, Directorate, Division, Service, Outcome, OutcomeDate, DateReceived, DateAccepted, DateClosed, PublicDocumentUrl, PublicDocumentId.\n'
+              'CaseLabel is the embedded text column — do not use it as a filter key.\n'
+              '\n'
+              'Example combining conditions:\n'
+              '{"filter":{"andAll":[{"equals":{"key":"Directorate","value":"Resources"}},{"in":{"key":"Outcome","value":["All information sent","Some information sent but part exempt"]}}]}}\n'
+              '\n'
+              'If the user question does not clearly imply filtering by these fields, output {"filter": null}.\n'
+              '\n'
+              'User question:\n'
+          )
+
+          def _valid_scalar(v):
+              return isinstance(v, (str, int, float, bool)) and v != ''
+
+          def _validate_retrieval_filter(node, depth=0):
+              if depth > 10 or not isinstance(node, dict) or len(node) != 1:
+                  return False
+              op = next(iter(node))
+              if op in ('andAll', 'orAll'):
+                  inner = node[op]
+                  if not isinstance(inner, list) or not inner or len(inner) > 12:
+                      return False
+                  return all(_validate_retrieval_filter(x, depth + 1) for x in inner)
+              if op in ('in', 'notIn'):
+                  spec = node[op]
+                  if not isinstance(spec, dict):
+                      return False
+                  k, val = spec.get('key'), spec.get('value')
+                  if k not in KB_METADATA_FILTER_KEYS:
+                      return False
+                  if not isinstance(val, list) or not val or len(val) > 25:
+                      return False
+                  return all(_valid_scalar(x) for x in val)
+              if op in ('equals', 'notEquals'):
+                  spec = node[op]
+                  if not isinstance(spec, dict):
+                      return False
+                  k, val = spec.get('key'), spec.get('value')
+                  if k not in KB_METADATA_FILTER_KEYS or val is None:
+                      return False
+                  return _valid_scalar(val)
+              if op in ('greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals'):
+                  spec = node[op]
+                  if not isinstance(spec, dict):
+                      return False
+                  k, val = spec.get('key'), spec.get('value')
+                  if k not in KB_METADATA_FILTER_KEYS or val is None:
+                      return False
+                  if not _valid_scalar(val):
+                      return False
+                  return _is_valid_range_filter_value(k, val)
+              return False
+
+          def _normalize_filter_leaf(op, spec):
+              if not isinstance(spec, dict) or not spec:
+                  return spec
+              if spec.get('key') in KB_METADATA_FILTER_KEYS and 'value' in spec:
+                  return spec
+              bad = set(spec.keys()) - {'key', 'value'}
+              if len(bad) == 1:
+                  k = next(iter(bad))
+                  if k in KB_METADATA_FILTER_KEYS:
+                      v = spec[k]
+                      if op in ('in', 'notIn'):
+                          if isinstance(v, list):
+                              return {'key': k, 'value': v}
+                      else:
+                          return {'key': k, 'value': v}
+              return spec
+
+          def _normalize_retrieval_filter(node, depth=0):
+              if depth > 12 or not isinstance(node, dict) or len(node) != 1:
+                  return node
+              op = next(iter(node))
+              if op in ('andAll', 'orAll'):
+                  inner = node[op]
+                  if not isinstance(inner, list):
+                      return node
+                  return {op: [_normalize_retrieval_filter(x, depth + 1) for x in inner]}
+              if op in ('in', 'notIn', 'equals', 'notEquals', 'greaterThan', 'greaterThanOrEquals',
+                        'lessThan', 'lessThanOrEquals'):
+                  return {op: _normalize_filter_leaf(op, node[op])}
+              return node
+
+          def _sanitize_retrieval_filter(node, depth=0):
+              if depth > 12 or not isinstance(node, dict) or len(node) != 1:
+                  return None
+              op = next(iter(node))
+              if op in ('andAll', 'orAll'):
+                  inner = node[op]
+                  if not isinstance(inner, list):
+                      return None
+                  cleaned = []
+                  for x in inner:
+                      c = _sanitize_retrieval_filter(x, depth + 1)
+                      if c is not None:
+                          cleaned.append(c)
+                  if not cleaned:
+                      return None
+                  if len(cleaned) == 1:
+                      return cleaned[0]
+                  return {op: cleaned}
+              if op in ('greaterThan', 'greaterThanOrEquals', 'lessThan', 'lessThanOrEquals'):
+                  spec = node[op]
+                  if not isinstance(spec, dict):
+                      return None
+                  k, val = spec.get('key'), spec.get('value')
+                  if k not in KB_METADATA_FILTER_KEYS or val is None:
+                      return None
+                  if not _is_valid_range_filter_value(k, val):
+                      print(f'Metadata filter dropped unsupported range clause (key={k!r}): {node}')
+                      return None
+                  return node
+              return node
+
+          def generate_metadata_filter(user_message):
+              try:
+                  resp = bedrock_runtime.converse(
+                      modelId=FILTER_MODEL_ID,
+                      messages=[{'role': 'user', 'content': [{'text': FILTER_PROMPT + user_message}]}],
+                      inferenceConfig={'maxTokens': 800, 'temperature': 0}
+                  )
+                  text = ''
+                  for block in resp.get('output', {}).get('message', {}).get('content', []):
+                      text += block.get('text', '')
+              except Exception as e:
+                  print(f'Metadata filter converse error: {e}')
+                  return None
+              text = (text or '').strip()
+              if text.startswith('```'):
+                  text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.IGNORECASE)
+                  text = re.sub(r'\s*```\s*$', '', text)
+              try:
+                  data = json.loads(text)
+              except json.JSONDecodeError:
+                  print(f'Metadata filter JSON decode failed: {text[:300]}')
+                  return None
+              filt = data.get('filter')
+              if filt is None:
+                  return None
+              filt = _normalize_retrieval_filter(filt)
+              filt = _sanitize_retrieval_filter(filt)
+              if filt is None:
+                  return None
+              if not _validate_retrieval_filter(filt):
+                  print(f'Metadata filter rejected: {filt}')
+                  return None
+              return filt
 
           SYSTEM_PROMPT = """You are a helpful UK local council service assistant for Sample Council.
           You help residents with council services including waste collection, council tax,
@@ -1371,16 +1573,17 @@ Resources:
                               return topic
               return 'General Enquiry'
 
-          def get_rag_response(user_message, session_id=None):
+          def get_rag_response(user_message, session_id=None, metadata_filter=None):
+              vsc = {'numberOfResults': 5}
+              if metadata_filter:
+                  vsc['filter'] = metadata_filter
               config = {
                   'type': 'KNOWLEDGE_BASE',
                   'knowledgeBaseConfiguration': {
                       'knowledgeBaseId': KB_ID,
                       'modelArn': MODEL_ARN,
                       'retrievalConfiguration': {
-                          'vectorSearchConfiguration': {
-                              'numberOfResults': 5
-                          }
+                          'vectorSearchConfiguration': vsc
                       },
                       'generationConfiguration': {
                           'inferenceConfig': {
@@ -1423,7 +1626,8 @@ Resources:
                   'sessionId': response.get('sessionId', ''),
                   'citations': len(citations),
                   'topic': topic,
-                  'guardrail': response.get('guardrailAction') == 'INTERVENED'
+                  'guardrail': response.get('guardrailAction') == 'INTERVENED',
+                  'metadataFilterApplied': bool(metadata_filter)
               }
 
           def render_chat_html():
@@ -1521,7 +1725,7 @@ Resources:
           function loadDisplay(){try{var saved=sessionStorage.getItem(displayKey);if(!saved)return false;var c=JSON.parse(saved);var md=document.getElementById('messages');for(var i=0;i<c.length;i++){var item=c[i];var msg=document.createElement('div');msg.className='message '+item.type;if(item.type==='bot'&&item.topic){var badge=document.createElement('div');badge.className='topic-badge';badge.textContent=item.topic;msg.appendChild(badge)}var bubble=document.createElement('div');bubble.className='bubble';if(item.text.indexOf('Unable to connect')!==-1||item.text.indexOf('Request timed out')!==-1||item.text.indexOf('API error')!==-1)bubble.className='bubble error-message';bubble.textContent=item.text;msg.appendChild(bubble);if(item.meta){var meta=document.createElement('div');meta.className='meta';meta.textContent=item.meta;msg.appendChild(meta)}md.appendChild(msg)}scrollToBottom();return true}catch(e){return false}}
           function clearConversation(){try{sessionStorage.removeItem(sessionKey);sessionStorage.removeItem(displayKey);var md=document.getElementById('messages');md.innerHTML='';var w=document.createElement('div');w.className='message bot';var b=document.createElement('div');b.className='bubble';b.textContent="Hello! I'm the council chatbot. I can help with bin collections, council tax, planning, housing, parking, roads, schools, social care, and general enquiries. What would you like to know?";w.appendChild(b);md.appendChild(w);saveDisplay();announceStatus('Conversation cleared');focusInput()}catch(e){console.error('Clear failed:',e)}}
           function addUserMessage(text){var msg=document.createElement('div');msg.className='message user';var b=document.createElement('div');b.className='bubble';b.textContent=text;msg.appendChild(b);document.getElementById('messages').appendChild(msg);scrollToBottom();saveDisplay()}
-          function displayBotResponse(data){var msg=document.createElement('div');msg.className='message bot';if(data.topic){var badge=document.createElement('div');badge.className='topic-badge';badge.textContent=data.topic;msg.appendChild(badge)}var b=document.createElement('div');b.className='bubble';b.textContent=data.response;msg.appendChild(b);var metaParts=[];if(data.guardrail)metaParts.push('guardrail active');if(data.citations>0)metaParts.push(data.citations+' source'+(data.citations>1?'s':''));if(metaParts.length>0){var meta=document.createElement('div');meta.className='meta';meta.textContent=metaParts.join(' | ');msg.appendChild(meta)}document.getElementById('messages').appendChild(msg);scrollToBottom();announceStatus('Response received: '+data.topic);saveDisplay()}
+          function displayBotResponse(data){var msg=document.createElement('div');msg.className='message bot';if(data.topic){var badge=document.createElement('div');badge.className='topic-badge';badge.textContent=data.topic;msg.appendChild(badge)}var b=document.createElement('div');b.className='bubble';b.textContent=data.response;msg.appendChild(b);var metaParts=[];if(data.guardrail)metaParts.push('guardrail active');if(data.metadataFilterApplied)metaParts.push('KB metadata filter');if(data.citations>0)metaParts.push(data.citations+' source'+(data.citations>1?'s':''));if(metaParts.length>0){var meta=document.createElement('div');meta.className='meta';meta.textContent=metaParts.join(' | ');msg.appendChild(meta)}document.getElementById('messages').appendChild(msg);scrollToBottom();announceStatus('Response received: '+data.topic);saveDisplay()}
           function displayError(e){var msg=document.createElement('div');msg.className='message bot';var b=document.createElement('div');b.className='bubble error-message';b.textContent=e;msg.appendChild(b);document.getElementById('messages').appendChild(msg);scrollToBottom();announceStatus('Error: '+e);saveDisplay()}
           async function sendMessage(text){if(isProcessing||!text.trim())return;isProcessing=true;try{setInputDisabled(true);announceStatus('Sending message');addUserMessage(text);showLoading();var payload={message:text};var sid=getSessionId();if(sid)payload.sessionId=sid;var controller=new AbortController();var tid=setTimeout(function(){controller.abort()},30000);var response=await fetch(window.location.href,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal});clearTimeout(tid);hideLoading();if(!response.ok){var ed;try{ed=await response.json();displayError(ed.error||'API error: '+response.status)}catch(e){displayError('API error: '+response.status)}return}var data=await response.json();if(data.error){displayError(data.error)}else{if(data.sessionId)setSessionId(data.sessionId);displayBotResponse(data)}}catch(error){hideLoading();if(error.name==='AbortError'){displayError('Request timed out. Please try again.')}else{displayError('Unable to connect. Please try again.')}}finally{isProcessing=false;setInputDisabled(false);focusInput()}}
           function handleSend(){var input=document.getElementById('userInput');var text=input.value.trim();if(text&&!isProcessing){input.value='';sendMessage(text)}}
@@ -1546,7 +1750,10 @@ Resources:
                       return {'statusCode': 400, 'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}, 'body': json.dumps({'error': 'Message is required'})}
 
                   session_id = body.get('sessionId', '') or None
-                  result = get_rag_response(user_message, session_id)
+                  metadata_filter = None
+                  if ENABLE_KB_METADATA_FILTER:
+                      metadata_filter = generate_metadata_filter(user_message)
+                  result = get_rag_response(user_message, session_id, metadata_filter)
 
                   if not result.get('success'):
                       return {'statusCode': 500, 'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}, 'body': json.dumps({'error': f"AI service error: {result.get('error', 'Unknown')}"})}
@@ -1561,7 +1768,8 @@ Resources:
                           'citations': result.get('citations', 0),
                           'query': body.get('message', body.get('query', '')),
                           'timestamp': datetime.utcnow().isoformat(),
-                          'model': 'Amazon Nova Pro', 'guardrail': result.get('guardrail', False)
+                          'model': 'Amazon Nova Pro', 'guardrail': result.get('guardrail', False),
+                          'metadataFilterApplied': result.get('metadataFilterApplied', False)
                       })
                   }
               except Exception as e:
